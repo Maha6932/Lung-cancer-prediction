@@ -1,0 +1,1015 @@
+---
+title: "Project_final"
+author: "Mahalakshmi Aranganathan"
+date: "2025-04-17"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+chooseCRANmirror(graphics = FALSE, ind = 1)
+tinytex::install_tinytex(force = TRUE)
+```
+
+```{r}
+# 📦 Install required package (only needs to be run once)
+# install.packages("readr")  # Uncomment this line if not already installed
+
+# 📚 Load libraries
+library(readr)    # For reading CSV files
+library(dplyr)    # For data manipulation
+
+# 📁 Read the clinical data CSV file
+clinical_combined_data <- read_csv("clinical_combined_data.csv")
+
+# 👀 View the dataset
+View(clinical_combined_data)
+
+# 🧹 Remove duplicate columns
+clinical_combined_data <- clinical_combined_data[, !duplicated(colnames(clinical_combined_data))]
+
+# 🧹 Remove columns with suffixes ".x" or ".y" (from merged datasets)
+clinical_combined_data <- clinical_combined_data[, !grepl("\\.x$|\\.y$", colnames(clinical_combined_data))]
+
+# 🧹 Remove columns that contain only "--" as values
+clinical_combined_data <- clinical_combined_data[, !apply(clinical_combined_data, 2, function(x) all(x == "--"))]
+
+# 🏷️ Display remaining column names
+colnames(clinical_combined_data)
+
+# 🔢 Convert 'age_at_diagnosis' from days to years and round to 2 decimals
+clinical_combined_data <- clinical_combined_data %>%
+  mutate(age_at_diagnosis = as.numeric(as.character(age_at_diagnosis)) / 365.25) %>%
+  mutate(age_at_diagnosis = round(age_at_diagnosis, 2))
+
+# 👀 View the updated dataset
+View(clinical_combined_data)
+
+# 🔄 Replace 'age_at_diagnosis' with 'age_at_index' (renaming column)
+clinical_combined_data <- clinical_combined_data %>%
+  select(-age_at_diagnosis) %>%
+  rename(age_at_diagnosis = age_at_index)
+
+# 🧬 Convert selected variables to categorical (factors)
+clinical_combined_data <- clinical_combined_data %>% 
+  mutate(
+    ajcc_pathologic_stage = ifelse(ajcc_pathologic_stage %in% c("--", "'--"), "unknown", ajcc_pathologic_stage),
+    exposure_type = as.factor(exposure_type),
+    tobacco_smoking_status = as.factor(tobacco_smoking_status),
+    gender = as.factor(gender),
+    race = as.factor(race),
+    vital_status = as.factor(vital_status),
+    treatment_outcome = as.factor(treatment_outcome),
+    ajcc_pathologic_stage = factor(
+      ajcc_pathologic_stage,
+      levels = c("Stage IIB", "Stage IB", "Stage IIIA", "Stage IIA", "Unknown", "Stage IA", "Stage IIIB", "Stage IV", "Stage I", "Stage                      II", "Stage III"),
+      labels = c("Stage IIB", "Stage IB", "Stage IIIA", "Stage IIA", "Unknown", "Stage IA", "Stage IIIB", "Stage IV", "Stage I", "Stage II", "Stage III")
+    )
+  )
+
+
+# ❌ Replace invalid entries ("'--") with NA
+clinical_combined_data[clinical_combined_data == "'--"] <- NA
+
+# 👀 View cleaned data
+View(clinical_combined_data)
+
+# 📊 Check missing values per column
+colSums(is.na(clinical_combined_data))
+
+# ⚠️ Set threshold: Remove columns with more than 70% missing values
+threshold <- 0.7
+missing_percent <- colSums(is.na(clinical_combined_data)) / nrow(clinical_combined_data)
+
+# 🧹 Keep only columns with <70% missing data
+clinical_combined_data <- clinical_combined_data %>%
+  select(which(missing_percent < threshold))
+
+# 👀 View after filtering
+View(clinical_combined_data)
+
+# 🔄 Convert 'pack_years_smoked' to numeric
+clinical_combined_data <- clinical_combined_data %>%
+  mutate(pack_years_smoked = as.numeric(as.character(pack_years_smoked)))
+
+# 🧪 Impute missing numeric values with median
+clinical_combined_data <- clinical_combined_data %>%
+  mutate(
+    pack_years_smoked = ifelse(is.na(pack_years_smoked), median(pack_years_smoked, na.rm = TRUE), pack_years_smoked),
+    age_at_diagnosis = ifelse(is.na(age_at_diagnosis), median(age_at_diagnosis, na.rm = TRUE), age_at_diagnosis)
+  )
+
+# 📈 Define function to compute mode (most frequent value)
+mode_func <- function(x) {
+  uniq_vals <- unique(na.omit(x))
+  uniq_vals[which.max(tabulate(match(x, uniq_vals)))]
+}
+
+# 🧩 Impute missing categorical values using mode
+clinical_combined_data <- clinical_combined_data %>%
+  mutate(
+    tobacco_smoking_status = ifelse(is.na(tobacco_smoking_status), mode_func(tobacco_smoking_status), tobacco_smoking_status),
+    treatment_type = ifelse(is.na(treatment_type), mode_func(treatment_type), treatment_type)
+  )
+
+# 👀 Final cleaned dataset
+View(clinical_combined_data)
+
+# 🏷️ Display column names of final dataset
+colnames(clinical_combined_data)
+
+```
+
+```{r}
+library(dplyr)
+library(caret) # For createDataPartition function
+library(randomForest) # For random forest model
+
+# Function to get mode of a vector (for imputing missing values)
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# Select relevant columns
+selected_data <- clinical_combined_data %>%
+  select(vital_status, ajcc_pathologic_stage, treatment_type, gender, race)
+
+# Impute missing values (for categorical variables like treatment_type, gender, race, etc.)
+selected_data$treatment_type[is.na(selected_data$treatment_type)] <- as.character(getmode(selected_data$treatment_type))
+selected_data$gender[is.na(selected_data$gender)] <- as.character(getmode(selected_data$gender))
+selected_data$race[is.na(selected_data$race)] <- as.character(getmode(selected_data$race))
+selected_data$ajcc_pathologic_stage[is.na(selected_data$ajcc_pathologic_stage)] <- as.character(getmode(selected_data$ajcc_pathologic_stage))
+
+# Remove any rows with missing vital_status
+selected_data <- selected_data %>%
+  na.omit()
+
+# Check the number of levels for each factor variable
+sapply(selected_data, function(x) if(is.factor(x)) length(levels(x)) else NA)
+
+# Split Data into training and testing sets
+set.seed(42)
+train_index <- createDataPartition(selected_data$vital_status, p = 0.8, list = FALSE)
+train_data <- selected_data[train_index, ]
+test_data <- selected_data[-train_index, ]
+
+# Ensure test_data has the same factor levels as train_data for all categorical variables
+for(col in names(selected_data)) {
+  if(is.factor(selected_data[[col]])) {
+    levels(test_data[[col]]) <- levels(train_data[[col]])
+  }
+}
+
+# Ensure vital_status is a factor variable
+train_data$vital_status <- factor(train_data$vital_status)
+test_data$vital_status <- factor(test_data$vital_status)
+
+# Fit the Logistic regression Model
+log_model <- glm(vital_status ~ ., data = train_data, family = binomial)
+
+# Evaluate the Logistic regression Model
+predictions_log <- predict(log_model, test_data, type = "response")
+predicted_classes_log <- ifelse(predictions_log > 0.5, levels(train_data$vital_status)[1], levels(train_data$vital_status)[2]) 
+
+# Confusion Matrix for Logistic regression
+conf_matrix_log <- table(predicted_classes_log, test_data$vital_status)
+print(conf_matrix_log)
+
+# Print predicted classes and actual values for Logistic regression
+print(predicted_classes_log)
+print(test_data$vital_status)
+
+# Train a Random Forest Model
+rf_model <- randomForest(vital_status ~ ., data = train_data)
+
+# Evaluate the Random Forest Model
+predicted_classes_rf <- predict(rf_model, newdata = test_data)
+
+# Confusion Matrix for Random Forest
+conf_matrix_rf <- table(predicted_classes_rf, test_data$vital_status)
+print(conf_matrix_rf)
+
+# Print predicted classes and actual values for Random Forest
+print(predicted_classes_rf)
+print(test_data$vital_status)
+
+confusion_log <- confusionMatrix(conf_matrix_log)
+print(confusion_log)
+
+confusion_rf <- confusionMatrix(conf_matrix_rf)
+print(confusion_rf)
+
+
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(caret) # For createDataPartition function
+library(rpart) # For Decision Tree model
+library(randomForest) # For Random Forest model
+library(pROC) # For ROC curve and AUC
+library(e1071) # For calculating performance metrics
+
+# Select relevant columns and handle missing values
+selected_data <- clinical_combined_data %>%
+  select(vital_status, ajcc_pathologic_stage, treatment_type, gender, race) %>%
+  na.omit()
+View(selected_data)
+levels(selected_data$vital_status)
+# Split Data into training and testing sets
+set.seed(42)
+train_index <- createDataPartition(selected_data$vital_status, p = 0.8, list = FALSE)
+train_data <- selected_data[train_index, ]
+test_data <- selected_data[-train_index, ]
+
+# Fit the Logistic Regression Model
+log_model <- glm(vital_status ~ ., data = train_data, family = binomial)
+
+# Predict using Logistic Regression
+predictions_log <- predict(log_model, test_data, type = "response")
+predicted_classes_log <- ifelse(predictions_log > 0.5, "Alive", "Dead")
+
+# Fit the Random Forest Model
+rf_model <- randomForest(vital_status ~ ., data = train_data)
+
+# Predict using Random Forest
+predicted_classes_rf <- predict(rf_model, newdata = test_data)
+
+# Fit the Decision Tree Model
+tree_model <- rpart(vital_status ~ ., data = train_data, method = "class")
+
+# Predict using Decision Tree
+predicted_classes_tree <- predict(tree_model, test_data, type = "class")
+
+evaluate_model <- function(predicted_classes, actual_classes, model_name) {
+  # Ensure predicted_classes and actual_classes are factors with the same levels
+  predicted_classes <- factor(predicted_classes, levels = c("Dead", "Alive"))
+  actual_classes <- factor(actual_classes, levels = c("Dead", "Alive"))
+  
+  # Confusion matrix
+  conf_matrix <- table(predicted_classes, actual_classes)
+  accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+  sensitivity <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+  specificity <- conf_matrix[1, 1] / sum(conf_matrix[1, ])
+  precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+  f1_score <- 2 * (precision * sensitivity) / (precision + sensitivity)
+  
+  # AUC: Convert factor to numeric (Dead = 0, Alive = 1)
+  auc <- roc(as.numeric(actual_classes) - 1, as.numeric(predicted_classes) - 1)$auc
+  
+  # Print metrics
+  cat("\nModel: ", model_name, "\n")
+  cat("Confusion Matrix:\n")
+  print(conf_matrix)
+  cat("Accuracy: ", accuracy, "\n")
+  cat("Sensitivity (Recall): ", sensitivity, "\n")
+  cat("Specificity: ", specificity, "\n")
+  cat("Precision: ", precision, "\n")
+  cat("F1-Score: ", f1_score, "\n")
+  cat("AUC: ", auc, "\n")
+}
+
+# Evaluate Logistic Regression
+evaluate_model(predicted_classes_log, test_data$vital_status, "Logistic Regression")
+
+# Evaluate Random Forest
+evaluate_model(predicted_classes_rf, test_data$vital_status, "Random Forest")
+
+# Evaluate Decision Tree
+evaluate_model(predicted_classes_tree, test_data$vital_status, "Decision Tree")
+
+# ###The evaluation results for the three models are as follows:
+# 
+# 1. Logistic Regression:
+# Accuracy: 0.31 (Low)
+# 
+# Sensitivity (Recall): 0.30 (Low)
+# 
+# Specificity: 0.33 (Low)
+# 
+# Precision: 0.43 (Moderate)
+# 
+# F1-Score: 0.35 (Low)
+# 
+# AUC: 0.67 (Moderate)
+# 
+# 2. Random Forest:
+# Accuracy: 0.77 (Good)
+# 
+# Sensitivity (Recall): 0.75 (High)
+# 
+# Specificity: 0.79 (High)
+# 
+# Precision: 0.72 (High)
+# 
+# F1-Score: 0.74 (Good)
+# 
+# AUC: 0.77 (Good)
+# 
+# 3. Decision Tree:
+# Accuracy: 0.71 (Good)
+# 
+# Sensitivity (Recall): 0.69 (Moderate)
+# 
+# Specificity: 0.72 (Moderate)
+# 
+# Precision: 0.61 (Moderate)
+# 
+# F1-Score: 0.65 (Moderate)
+# 
+# AUC: 0.70 (Moderate)
+# 
+# Key Observations:
+# Random Forest consistently outperforms the other two models across all evaluation metrics. It has the highest accuracy, sensitivity, specificity, precision, F1-score, and AUC.
+# 
+# Logistic Regression shows the poorest performance, with low accuracy and sensitivity. Its precision is also lower compared to the others, indicating that it struggles with classification.
+# 
+# Decision Tree performs decently but does not match Random Forest in terms of accuracy, sensitivity, or precision.
+# 
+# Conclusion:
+# Random Forest is the most reliable model in this case, achieving the best results across all metrics.
+# 
+# Decision Tree performs better than Logistic Regression but is not as strong as Random Forest.
+# 
+# Logistic Regression shows limited performance and may not be suitable for this dataset based on the current evaluation.
+# ###
+```
+
+```{r}
+#Bar Plot for Model Comparison
+
+performance_metrics <- data.frame(
+  Model = c("Logistic Regression", "Random Forest", "Decision Tree"),
+  Accuracy = c(0.31, 0.77, 0.71),
+  Sensitivity = c(0.30, 0.75, 0.69),
+  Specificity = c(0.33, 0.79, 0.72),
+  Precision = c(0.43, 0.72, 0.61),
+  F1_Score = c(0.35, 0.74, 0.65),
+  AUC = c(0.67, 0.77, 0.70)
+)
+
+#Reshape the data frame to long format for ggplot
+library(tidyr)
+performance_metric_long <- performance_metrics %>%
+  gather(key = "Metric", value = "Value", -Model)
+
+#Create a bar plot using ggplot2
+library(ggplot2)
+ggplot(performance_metric_long, aes(x = Model, y = Value, fill = Metric)) + geom_bar(stat = "identity", position = "dodge") + 
+  theme_minimal() + labs (title = "Model Performance Comparision", y = "Score", x = "Model") + theme(axis.test.x = element_text(angle = 45, hjust = 1)) + 
+scale_fill_brewer(palette = "Set3")
+
+#ROC Curve for AUC Comparison
+
+library(pROC)
+
+#Generate ROC curves for each model
+roc_log <- roc(test_data$vital_status, as.numeric(predictions_log))
+roc_rf <- roc(test_data$vital_status, as.numeric(predicted_classes_rf))
+roc_tree <- roc(test_data$vital_status, as.numeric(predicted_classes_tree))
+
+#Plot ROC curves
+
+plot(roc_log, col = "red", main = "ROC Curves Comparision", lwd = 2)
+lines(roc_rf, col = "blue", lwd = 2)
+lines(roc_tree, col = "green", lwd =2)
+
+#Add Legend
+legend("bottomright", legend = c("Logistic Regression", "Random Forest", "Decision Tree"), col = c("red","blue","green"), lwd = 2)
+
+#HEATMAP FOR CORRELATION BETWEEN MODEL METRICS
+# Create a correlation matrix for the models
+cor_matrix <- cor(performance_metrics[, -1])  # Exclude 'Model' column
+
+# Plot heatmap
+install.packages("pheatmap")
+library(pheatmap)
+pheatmap(cor_matrix, cluster_rows = TRUE, cluster_cols = TRUE, display_numbers = TRUE)
+
+
+#BOXPLOT
+# Data frame to hold evaluation metrics for boxplot
+metrics_data <- data.frame(
+  Model = rep(c("Logistic Regression", "Random Forest", "Decision Tree"), each = 6),
+  Accuracy = c(0.31, 0.77, 0.71),
+  Sensitivity = c(0.30, 0.75, 0.69),
+  Specificity = c(0.33, 0.79, 0.72),
+  Precision = c(0.43, 0.72, 0.61),
+  F1_Score = c(0.35, 0.74, 0.65),
+  AUC = c(0.67, 0.77, 0.70)
+)
+
+# Reshape data for ggplot
+metrics_data_long <- metrics_data %>%
+  gather(key = "Metric", value = "Value", -Model)
+
+# Create boxplot
+ggplot(metrics_data_long, aes(x = Model, y = Value, fill = Model)) +
+  geom_boxplot() +
+  facet_wrap(~ Metric, scales = "free") +
+  theme_minimal() +
+  labs(title = "Performance Comparison of Models")
+
+
+```
+
+```{r}
+# Get the feature importance from the Random Forest model
+importance_rf <- randomForest::importance(rf_model)
+
+# Display the importance
+print(importance_rf)
+
+# If you want to display the importance in a more readable format
+importance_rf_df <- data.frame(Feature = rownames(importance_rf), Importance = importance_rf[,1])
+importance_rf_df <- importance_rf_df[order(-importance_rf_df$Importance), ]  # Sort by importance
+
+# View the sorted importance
+print(importance_rf_df)
+
+# Visualize the feature importance using ggplot2
+library(ggplot2)
+
+# Create a bar plot
+ggplot(importance_rf_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Feature Importance in Random Forest Model",
+       x = "Features",
+       y = "Importance") +
+  theme_minimal()
+
+```
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# View structure of vital_status column
+str(clinical_combined_data$vital_status)
+
+# Convert vital_status to factor (if not already)
+clinical_combined_data$vital_status <- as.factor(clinical_combined_data$vital_status)
+
+# Convert age_at_diagnosis to numeric
+clinical_combined_data$age_at_diagnosis <- as.numeric(clinical_combined_data$age_at_diagnosis)
+
+clinical_combined_data$pack_years_smoked <- as.numeric(as.character(clinical_combined_data$pack_years_smoked))
+
+
+# Recode tobacco_smoking_status into meaningful categories
+clinical_combined_data <- clinical_combined_data %>%
+  mutate(tobacco_smoking_status = recode(as.numeric(tobacco_smoking_status),
+                                         `1` = "Reformed Smoker",
+                                         `2` = "Reformed Smoker",
+                                         `3` = "Non-Smoker",
+                                         `4` = "Current Smoker",
+                                         `5` = "Unknown",
+                                         `6` = "Reformed Smoker",
+                                         `7` = "Unknown"),
+         tobacco_smoking_status = factor(tobacco_smoking_status))
+
+# Convert pack_years_smoked to factor (assuming it's categorical)
+clinical_combined_data$pack_years_smoked <- as.factor(clinical_combined_data$pack_years_smoked)
+
+# Remove rows with missing pack_years_smoked
+clinical_combined_data <- clinical_combined_data[!is.na(clinical_combined_data$pack_years_smoked), ]
+
+# View summaries and tables
+table(clinical_combined_data$tobacco_smoking_status)
+table(clinical_combined_data$exposure_type)
+summary(clinical_combined_data$pack_years_smoked)
+summary(clinical_combined_data$age_at_diagnosis)
+
+# Check if vital_status is binary before fitting logistic regression
+table(clinical_combined_data$vital_status)
+
+# Fit logistic regression model
+model <- glm(vital_status ~ pack_years_smoked + tobacco_smoking_status, 
+             family = binomial, data = clinical_combined_data)
+summary(model)
+
+# Check factor levels
+levels(clinical_combined_data$pack_years_smoked)
+levels(clinical_combined_data$tobacco_smoking_status)
+levels(clinical_combined_data$vital_status)
+
+# View cleaned dataset (interactive RStudio only)
+# View(clinical_combined_data)
+
+```
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(caret)         # For createDataPartition
+library(rpart)         # For Decision Tree
+library(randomForest)  # For Random Forest
+library(pROC)          # For ROC curve and AUC
+library(e1071)         # For performance metrics
+
+# Select relevant columns and handle missing values
+selected_data <- clinical_combined_data %>%
+  select(vital_status, ajcc_pathologic_stage, treatment_type, gender, race, tobacco_smoking_status) %>%
+  na.omit()
+
+# Recode vital_status to numeric: 0 = Alive, 1 = Dead
+selected_data$vital_status <- ifelse(selected_data$vital_status == "Alive", 0, 1)
+selected_data$vital_status <- as.factor(selected_data$vital_status)
+
+# Split into training and testing sets
+set.seed(42)
+train_index <- createDataPartition(selected_data$vital_status, p = 0.8, list = FALSE)
+train_data <- selected_data[train_index, ]
+test_data <- selected_data[-train_index, ]
+
+# ---------------- Logistic Regression ----------------
+log_model <- glm(vital_status ~ ., data = train_data, family = binomial)
+predictions_log <- predict(log_model, newdata = test_data, type = "response")
+predicted_classes_log <- ifelse(predictions_log > 0.5, 1, 0)
+predicted_classes_log <- as.factor(predicted_classes_log)
+
+# ---------------- Random Forest ----------------
+rf_model <- randomForest(vital_status ~ ., data = train_data)
+predicted_classes_rf <- predict(rf_model, newdata = test_data)
+rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+
+# ---------------- Decision Tree ----------------
+tree_model <- rpart(vital_status ~ ., data = train_data, method = "class")
+predicted_classes_tree <- predict(tree_model, newdata = test_data, type = "class")
+
+# ---------------- Evaluation Function ----------------
+evaluate_model <- function(predicted_classes, actual_classes, predicted_probs = NULL, model_name = "") {
+  predicted_classes <- factor(predicted_classes, levels = c(0, 1))
+  actual_classes <- factor(actual_classes, levels = c(0, 1))
+  
+  conf_matrix <- table(Predicted = predicted_classes, Actual = actual_classes)
+  accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+  sensitivity <- conf_matrix["1", "1"] / sum(conf_matrix[, "1"])
+  specificity <- conf_matrix["0", "0"] / sum(conf_matrix[, "0"])
+  precision <- conf_matrix["1", "1"] / sum(conf_matrix["1", ])
+  f1_score <- 2 * (precision * sensitivity) / (precision + sensitivity)
+  
+  cat("\nModel: ", model_name, "\n")
+  cat("Confusion Matrix:\n")
+  print(conf_matrix)
+  cat("Accuracy: ", round(accuracy, 4), "\n")
+  cat("Sensitivity (Recall): ", round(sensitivity, 4), "\n")
+  cat("Specificity: ", round(specificity, 4), "\n")
+  cat("Precision: ", round(precision, 4), "\n")
+  cat("F1-Score: ", round(f1_score, 4), "\n")
+  
+  if (!is.null(predicted_probs)) {
+    roc_obj <- roc(actual_classes, predicted_probs)
+    cat("AUC: ", round(auc(roc_obj), 4), "\n")
+    plot(roc_obj, col = "blue", main = paste("ROC Curve -", model_name))
+  }
+}
+
+# ---------------- Evaluate Models ----------------
+evaluate_model(predicted_classes_log, test_data$vital_status, predictions_log, "Logistic Regression")
+evaluate_model(predicted_classes_rf, test_data$vital_status, rf_probs, "Random Forest")
+evaluate_model(predicted_classes_tree, test_data$vital_status, NULL, "Decision Tree")
+
+
+```
+
+```{r}
+# Get the feature importance from the Random Forest model
+importance_rf <- randomForest::importance(rf_model)
+
+# Display the importance
+print(importance_rf)
+
+# If you want to display the importance in a more readable format
+importance_rf_df <- data.frame(Feature = rownames(importance_rf), Importance = importance_rf[,1])
+importance_rf_df <- importance_rf_df[order(-importance_rf_df$Importance), ]  # Sort by importance
+
+# View the sorted importance
+print(importance_rf_df)
+
+# Visualize the feature importance using ggplot2
+library(ggplot2)
+
+# Create a bar plot
+ggplot(importance_rf_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Feature Importance in Random Forest Model",
+       x = "Features",
+       y = "Importance") +
+  theme_minimal()
+
+```
+
+#To understand which treatment model led to a the positive effect more
+```{r}
+# Load libraries
+library(ggplot2)
+library(dplyr)
+library(broom)
+
+# Logistic regression with only treatment_type
+log_model_treatment <- glm(vital_status ~ treatment_type, data = selected_data, family = binomial)
+
+# Tidy the model output
+tidy_model <- tidy(log_model_treatment) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(treatment = gsub("treatment_type", "", term))
+
+# Create bar plot of treatment effects
+ggplot(tidy_model, aes(x = reorder(treatment, estimate), y = estimate, fill = estimate > 0)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  coord_flip() +
+  labs(title = "Effect of Treatment Type on Survival",
+       x = "Treatment Type",
+       y = "Estimate (Log-Odds)") +
+  scale_fill_manual(values = c("red", "green"), labels = c("Negative", "Positive"), name = "Effect") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10))
+
+```
+
+```{r}
+# Install and load required packages if not already installed
+required_packages <- c("survival", "survminer", "dplyr", "ggplot2")
+
+# Check for missing packages and install them
+installed_packages <- installed.packages()[, "Package"]
+to_install <- setdiff(required_packages, installed_packages)
+
+if(length(to_install) > 0) {
+  install.packages(to_install)
+}
+
+# Load libraries
+library(survival)
+library(survminer)
+library(dplyr)
+library(ggplot2)
+
+# Select relevant columns and preprocess data for survival analysis
+surv_data <- clinical_combined_data %>%
+  select(
+    days_to_death, 
+    days_to_diagnosis, 
+    vital_status, 
+    age_at_diagnosis, 
+    ajcc_pathologic_stage, 
+    tobacco_smoking_status, 
+    pack_years_smoked, 
+    gender
+  ) %>%
+  mutate(
+    # Ensure days_to_death and days_to_diagnosis are numeric
+    days_to_death = as.numeric(days_to_death),
+    days_to_diagnosis = as.numeric(days_to_diagnosis)
+  )
+
+# Function to calculate the mode (most frequent value)
+get_mode <- function(x) {
+  ux <- unique(na.omit(x))  # Remove NAs and find unique values
+  ux[which.max(tabulate(match(x, ux)))]  # Return the most frequent value
+}
+
+# Impute missing values for 'days_to_death' and 'days_to_diagnosis'
+surv_data$days_to_death[is.na(surv_data$days_to_death)] <- get_mode(surv_data$days_to_death)
+surv_data$days_to_diagnosis[is.na(surv_data$days_to_diagnosis)] <- get_mode(surv_data$days_to_diagnosis)
+
+# Define event status (1 = Dead, 0 = Alive) and calculate survival time
+surv_data <- surv_data %>%
+  mutate(
+    event = ifelse(vital_status == "Dead", 1, 0),
+    survival_time = pmax(days_to_death - days_to_diagnosis, 1)  # Ensure survival time is positive
+  )
+
+# Remove rows with missing or undefined AJCC stage
+surv_data <- surv_data %>%
+  filter(!is.na(ajcc_pathologic_stage) & ajcc_pathologic_stage != "") %>%
+  mutate(ajcc_pathologic_stage = factor(ajcc_pathologic_stage))
+
+# Create survival object
+surv_obj <- Surv(time = surv_data$survival_time, event = surv_data$event)
+
+# Fit Kaplan-Meier survival curves based on AJCC pathological stage
+km_fit <- survfit(surv_obj ~ ajcc_pathologic_stage, data = surv_data)
+
+# Determine number of levels in AJCC Pathologic Stage
+num_levels <- length(levels(surv_data$ajcc_pathologic_stage))
+
+# Choose an appropriate color palette based on the number of levels
+palette_choice <- if(num_levels <= 8) {
+  "Dark2"
+} else {
+  "Set3"  # 'Set3' can handle up to 12 colors
+}
+
+# Generate Kaplan-Meier plot with customized options
+ggsurvplot(
+  fit = km_fit,  # Kaplan-Meier fit
+  data = surv_data,  # Data for analysis
+  pval = TRUE,  # Display p-value of the log-rank test
+  conf.int = TRUE,  # Show confidence intervals
+  risk.table = TRUE,  # Include risk table
+  risk.table.y.text.col = TRUE,  # Color risk table text
+  risk.table.height = 0.25,  # Adjust height of risk table
+  xlab = "Time (days)",  # X-axis label
+  ylab = "Survival Probability",  # Y-axis label
+  break.time.by = 1000,  # Time breaks every 1000 days
+  ggtheme = theme_minimal(),  # Minimal plot theme
+  palette = palette_choice,  # Use the selected color palette
+  legend.title = "AJCC Stage",  # Legend title
+  legend.labs = levels(surv_data$ajcc_pathologic_stage),  # Legend labels
+  title = "Survival Analysis by AJCC Pathologic Stage"  # Plot title
+)
+
+# Perform log-rank test to compare survival distributions by AJCC stages
+logrank_test <- survdiff(surv_obj ~ ajcc_pathologic_stage, data = surv_data)
+
+# Display log-rank test results
+summary(logrank_test)
+
+```
+
+
+📉 Key Interpretations:
+✅ 1. Clear stage-wise separation:
+Survival curves drop at different rates depending on the AJCC stage.
+
+Patients with early-stage cancers (Stage I, IA, IB) have higher survival probabilities over time.
+
+In contrast, Stage IV and III patients have steeper drops, indicating worse survival outcomes.
+
+✅ 2. p-value < 0.0001:
+This indicates that the differences in survival between the stages are statistically significant.
+
+In other words, AJCC stage is strongly associated with survival.
+
+✅ 3. Risk Table (below the plot):
+Shows the number of patients still under observation ("at risk") at different time intervals for each stage.
+
+Numbers decrease over time as patients either die or are censored (lost to follow-up).
+
+✅ 4. Stage-wise patterns:
+Here’s a simplified view of the survival trend:
+
+
+Stage	Trend
+Stage I / IA	Best survival, slowest drop in probability
+Stage IB / IIA	Moderate survival
+Stage IIB / IIIA / IIIB	Poorer outcomes, quicker drops
+Stage IV	Worst prognosis, sharpest decline
+
+
+```{r}
+# Load necessary libraries
+library(survival)
+library(survminer)
+library(ggplot2)
+
+# Convert AJCC stage to character to allow modification
+surv_data$ajcc_pathologic_stage <- as.character(surv_data$ajcc_pathologic_stage)
+
+# Merge 'Stage III' into 'Stage IIIA'
+surv_data$ajcc_pathologic_stage[surv_data$ajcc_pathologic_stage == "Stage III"] <- "Stage IIIA"
+
+# Convert back to factor and drop unused levels
+surv_data$ajcc_pathologic_stage <- droplevels(factor(surv_data$ajcc_pathologic_stage))
+surv_data$tobacco_smoking_status <- droplevels(factor(surv_data$tobacco_smoking_status))
+
+# Fit Cox model
+cox_fit_merged <- coxph(Surv(survival_time, event) ~ 
+                          age_at_diagnosis + 
+                          tobacco_smoking_status + 
+                          ajcc_pathologic_stage, 
+                        data = surv_data)
+
+# Display summary
+cox_summary <- summary(cox_fit_merged)
+
+# Create a data frame with HR and confidence intervals
+results <- data.frame(
+  Variable = rownames(cox_summary$coefficients),
+  HR = exp(cox_summary$coefficients[, "coef"]),
+  LowerCI = exp(cox_summary$conf.int[, "lower .95"]),
+  UpperCI = exp(cox_summary$conf.int[, "upper .95"]),
+  PValue = cox_summary$coefficients[, "Pr(>|z|)"]
+)
+
+# Forest plot of Hazard Ratios
+ggplot(results, aes(x = reorder(Variable, HR), y = HR, ymin = LowerCI, ymax = UpperCI)) +
+  geom_pointrange() +
+  coord_flip() +
+  labs(x = "Variables", y = "Hazard Ratio") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 10)) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red")
+
+# Kaplan-Meier survival curves (based on the Cox model)
+ggsurvplot(survfit(cox_fit_merged), data = surv_data, pval = TRUE)
+
+
+
+
+```
+
+#Random Forest code
+
+```{r}
+# Load libraries
+library(ranger)
+library(survival)
+library(ggplot2)
+
+# Fit the random forest survival model
+rf_model <- ranger(
+  formula = Surv(survival_time, event) ~ age_at_diagnosis + 
+                                         tobacco_smoking_status + 
+                                         ajcc_pathologic_stage,
+  data = surv_data,
+  num.trees = 100,           # Start small for testing
+  mtry = 2,
+  seed = 42,
+  importance = "none",
+  respect.unordered.factors = "order",
+  survival = TRUE,
+  keep.inbag = TRUE
+)
+
+# Extract survival probabilities for first patient
+# These are computed during model training (not in predict)
+surv_probs_patient1 <- rf_model$survival[1, ]  # 1st patient
+time_points <- rf_model$unique.death.times
+
+# Plot survival curve for Patient 1
+df_plot <- data.frame(
+  Time = time_points,
+  Survival = surv_probs_patient1
+)
+
+ggplot(df_plot, aes(x = Time, y = Survival)) +
+  geom_line(color = "darkgreen", size = 1.2) +
+  labs(
+    title = "Predicted Survival Curve (Patient 1)",
+    x = "Time",
+    y = "Survival Probability"
+  ) +
+  theme_minimal()
+# Number of patients to plot
+n_patients <- 5
+
+# Create a long-format data frame for ggplot
+surv_plot_df <- data.frame(
+  Time = rep(rf_model$unique.death.times, times = n_patients),
+  Survival = as.vector(t(rf_model$survival[1:n_patients, ])),
+  Patient = factor(rep(1:n_patients, each = length(rf_model$unique.death.times)))
+)
+
+ggplot(surv_plot_df, aes(x = Time, y = Survival, color = Patient)) +
+  geom_line(size = 1.2) +
+  labs(
+    title = "Predicted Survival Curves for First 5 Patients",
+    x = "Time",
+    y = "Survival Probability",
+    color = "Patient"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Number of patients to visualize
+n_patients <- 5
+
+# Create long-format data frame with survival curves + stage info
+surv_plot_df <- data.frame(
+  Time = rep(rf_model$unique.death.times, times = n_patients),
+  Survival = as.vector(t(rf_model$survival[1:n_patients, ])),
+  Patient = factor(rep(1:n_patients, each = length(rf_model$unique.death.times))),
+  Stage = rep(surv_data$ajcc_pathologic_stage[1:n_patients], each = length(rf_model$unique.death.times))
+)
+
+# Plot survival curves by patient with facet for AJCC stage
+library(ggplot2)
+
+ggplot(surv_plot_df, aes(x = Time, y = Survival, color = Patient)) +
+  geom_line(size = 1.2) +
+  facet_wrap(~ Stage) +
+  labs(
+    title = "Predicted Survival Curves for First 5 Patients by AJCC Stage",
+    x = "Time",
+    y = "Survival Probability",
+    color = "Patient"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Get survival probabilities from ranger model
+surv_probs <- rf_model$survival
+time_points <- rf_model$unique.death.times
+
+# Add stage info to each row
+stage_vector <- surv_data$ajcc_pathologic_stage
+surv_df <- as.data.frame(surv_probs)
+surv_df$Stage <- stage_vector
+
+# Group by stage and calculate mean survival at each time point
+mean_surv_by_stage <- surv_df %>%
+  group_by(Stage) %>%
+  summarise(across(.cols = where(is.numeric), .fns = mean, na.rm = TRUE))
+
+# Convert wide to long for plotting
+mean_surv_long <- mean_surv_by_stage %>%
+  pivot_longer(
+    cols = -Stage,
+    names_to = "Time_Index",
+    values_to = "Survival"
+  ) %>%
+  mutate(Time = time_points[as.numeric(gsub("V", "", Time_Index))])
+
+# Plot
+ggplot(mean_surv_long, aes(x = Time, y = Survival, color = Stage)) +
+  geom_line(size = 1.2) +
+  labs(
+    title = "Average Survival Curves by AJCC Stage",
+    x = "Time",
+    y = "Survival Probability"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+# Load required libraries
+library(ranger)
+library(iml)
+library(dplyr)
+library(survival)
+
+# Train the survival random forest model
+rf_model <- ranger(Surv(survival_time, event) ~ age_at_diagnosis + tobacco_smoking_status + ajcc_pathologic_stage, 
+                   data = surv_data,
+                   num.trees = 500,
+                   importance = "impurity",
+                   mtry = 2,
+                   seed = 42)
+
+# Prepare the input data for prediction (excluding survival_time and event)
+X <- surv_data %>%
+  select(-survival_time, -event)
+
+# Define the prediction function for expected survival time
+predict_expected_survival <- function(newdata) {
+  pred <- predict(rf_model, data = newdata)
+  times <- rf_model$unique.death.times
+  
+  # Convert to matrix (important when predicting for 1 row)
+  survival_matrix <- matrix(pred$survival, nrow = nrow(newdata))
+  
+  # Compute expected survival time
+  expected <- apply(survival_matrix, 1, function(surv) {
+    sum(diff(c(0, times)) * surv)
+  })
+  
+  return(expected)
+}
+
+# Wrap the function for iml::Predictor compatibility
+custom_predict_function <- function(model, newdata) {
+  predict_expected_survival(newdata)
+}
+
+# Create the Predictor object
+predictor <- Predictor$new(
+  model = NULL,  # Set to NULL since we use a custom prediction function
+  data = X,
+  y = surv_data$survival_time,
+  predict.fun = custom_predict_function
+)
+
+# Inspect input
+str(X[1, , drop = FALSE])
+
+# SHAP for the first observation
+shap <- Shapley$new(predictor, x.interest = X[1, , drop = FALSE])
+
+# Plot SHAP values
+shap$plot()
+
+for (i in 1:5) {  # Just the first 5 patients for example
+  shap <- Shapley$new(predictor, x.interest = X[i, , drop = FALSE])
+  print(paste("Patient", i))
+  print(shap$results)
+  plot(shap)
+}
+
+View(surv_data)
+
+```
