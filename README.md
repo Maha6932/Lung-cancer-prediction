@@ -103,8 +103,8 @@ This project demonstrates that **machine learning models, particularly Random Fo
 For questions or collaborations:
 
 * **Mahalakshmi Aranganathan**
-* \mahalakshmi.aranga@gmail.com
-* \https://www.linkedin.com/in/mahalakshmi-aranganathan/
+* mahalakshmi.aranga@gmail.com
+* https://www.linkedin.com/in/mahalakshmi-aranganathan/
 
 ---
 
@@ -112,8 +112,5 @@ For questions or collaborations:
 
 This project was developed as part of **STAT 5353: Probability and statistics for data science and Bioinformatics** to demonstrate practical applications of machine learning in healthcare analytics.
 
----
 
-```
 
----
